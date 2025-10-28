@@ -1,334 +1,198 @@
 import streamlit as st
 import pandas as pd
+import ccxt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
-# Import from current directory instead of app package
-from exchange_client import ExchangeClient
-from technical_analysis import TechnicalAnalysis
-from utils import format_number, validate_settings
 
 # Configure the app
 st.set_page_config(
     page_title="Crypto Futures Screener",
     page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Default settings
-DEFAULT_SETTINGS = {
-    "EXCHANGES": ["binance", "bybit"],
-    "EMA_FAST": 9,
-    "EMA_SLOW": 26,
-    "MAX_SYMBOLS": 50,
-    "TIMEFRAMES": ["1m", "5m", "15m", "1h", "4h", "1d", "1w"],
-    "DEFAULT_TIMEFRAME": "1h",
-    "OHLCV_LIMIT": 100
-}
+def calculate_ema(data, period):
+    """Calculate EMA using pandas (built-in, no external dependencies)"""
+    return data.ewm(span=period, adjust=False).mean()
 
 def main():
-    # Title and description
     st.title("🚀 Crypto Futures Screener")
-    st.markdown("Scan for EMA crossover opportunities across multiple exchanges")
+    st.markdown("EMA Crossover Scanner for Binance & Bybit")
     
     # Sidebar configuration
-    settings = render_sidebar()
+    st.sidebar.header("Settings")
     
-    # Main content
-    if st.button("🔍 SCAN MARKETS", type="primary", use_container_width=True):
-        scan_markets(settings)
+    exchange_name = st.sidebar.selectbox("Exchange", ["binance", "bybit"])
+    ema_fast = st.sidebar.number_input("Fast EMA", value=9, min_value=1, max_value=50)
+    ema_slow = st.sidebar.number_input("Slow EMA", value=26, min_value=5, max_value=100)
+    timeframe = st.sidebar.selectbox("Timeframe", ["1h", "4h", "1d", "1w"])
+    max_symbols = st.sidebar.slider("Max Symbols", 10, 600, 100)
     
-    # Instructions
-    render_instructions()
+    if st.button("🔍 SCAN MARKETS"):
+        scan_markets(exchange_name, ema_fast, ema_slow, timeframe, max_symbols)
 
-def render_sidebar():
-    """Render sidebar with configuration options"""
-    st.sidebar.header("⚙️ Configuration")
-    
-    # Exchange selection
-    exchange_name = st.sidebar.selectbox(
-        "Select Exchange",
-        DEFAULT_SETTINGS["EXCHANGES"],
-        index=0
-    )
-    
-    # EMA configuration
-    st.sidebar.subheader("📊 EMA Settings")
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        ema_fast = st.number_input(
-            "Fast EMA", 
-            min_value=1, 
-            max_value=100, 
-            value=DEFAULT_SETTINGS["EMA_FAST"]
-        )
-    with col2:
-        ema_slow = st.number_input(
-            "Slow EMA", 
-            min_value=1, 
-            max_value=200, 
-            value=DEFAULT_SETTINGS["EMA_SLOW"]
-        )
-    
-    # Timeframe selection
-    timeframe = st.sidebar.selectbox(
-        "Select Timeframe",
-        DEFAULT_SETTINGS["TIMEFRAMES"],
-        index=3  # Default to 1h
-    )
-    
-    # Performance settings
-    st.sidebar.subheader("⚡ Performance")
-    max_symbols = st.sidebar.slider(
-        "Max Symbols to Scan",
-        min_value=10,
-        max_value=100,
-        value=DEFAULT_SETTINGS["MAX_SYMBOLS"],
-        help="Limit number of symbols for faster scanning"
-    )
-    
-    return {
-        "exchange": exchange_name,
-        "ema_fast": ema_fast,
-        "ema_slow": ema_slow,
-        "timeframe": timeframe,
-        "max_symbols": max_symbols
-    }
-
-def scan_markets(settings):
-    """Scan markets based on settings"""
-    # Validate settings
-    if not validate_settings(settings):
-        st.error("Invalid settings. Please check your inputs.")
-        return
-    
-    # Initialize clients
-    exchange_client = ExchangeClient(settings["exchange"])
-    tech_analysis = TechnicalAnalysis(
-        fast_period=settings["ema_fast"],
-        slow_period=settings["ema_slow"]
-    )
-    
-    # Show progress
-    st.info(f"🔄 Scanning {settings['exchange'].upper()} futures markets on {settings['timeframe']} timeframe...")
-    
+def scan_markets(exchange_name, ema_fast, ema_slow, timeframe, max_symbols):
+    """Scan markets with error handling"""
     try:
-        # Fetch and analyze symbols
-        results = exchange_client.scan_symbols(
-            timeframe=settings["timeframe"],
-            max_symbols=settings["max_symbols"],
-            analysis_function=tech_analysis.analyze_ema_crossover
-        )
-        
-        if results:
-            display_results(results, settings)
+        # Initialize exchange
+        if exchange_name == "binance":
+            exchange = ccxt.binance({
+                'enableRateLimit': True,
+                'options': {'defaultType': 'future'}
+            })
         else:
-            st.warning("❌ No trading signals found or error fetching data.")
+            exchange = ccxt.bybit({'enableRateLimit': True})
+        
+        # Get markets
+        st.info(f"🔄 Loading markets from {exchange_name}...")
+        markets = exchange.load_markets()
+        symbols = [s for s in markets.keys() if 'USDT' in s and '/USDT' in s][:max_symbols]
+        
+        st.info(f"📊 Scanning {len(symbols)} symbols on {timeframe} timeframe...")
+        
+        results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, symbol in enumerate(symbols):
+            status_text.text(f"Analyzing {symbol}... ({i+1}/{len(symbols)})")
             
-    except Exception as e:
-        st.error(f"🚨 Error during scanning: {str(e)}")
-
-def display_results(results, settings):
-    """Display scan results"""
-    st.subheader("📊 Scan Results")
-    
-    # Convert to DataFrame
-    df = pd.DataFrame(results)
-    
-    # Filter options
-    col1, col2 = st.columns(2)
-    with col1:
-        show_signals = st.multiselect(
-            "Filter by Signal",
-            options=df['Signal'].unique(),
-            default=df['Signal'].unique()
-        )
-    with col2:
-        show_trend = st.multiselect(
-            "Filter by Trend",
-            options=df['Trend'].unique(),
-            default=df['Trend'].unique()
-        )
-    
-    # Filter results
-    filtered_df = df[
-        (df['Signal'].isin(show_signals)) & 
-        (df['Trend'].isin(show_trend))
-    ]
-    
-    if filtered_df.empty:
-        st.warning("No results match your filters.")
-        return
-    
-    # Display results table
-    st.dataframe(
-        filtered_df.style.format({
-            'Price': '{:.6f}',
-            f'EMA{settings["ema_fast"]}': '{:.6f}',
-            f'EMA{settings["ema_slow"]}': '{:.6f}'
-        }),
-        use_container_width=True,
-        height=400
-    )
-    
-    # Detailed analysis for selected symbol
-    if not filtered_df.empty:
-        display_detailed_analysis(filtered_df, settings)
-
-def display_detailed_analysis(results_df, settings):
-    """Display detailed analysis for selected symbol"""
-    st.subheader("📈 Detailed Analysis")
-    
-    selected_symbol = st.selectbox(
-        "Select symbol for detailed chart:",
-        results_df['Symbol'].tolist()
-    )
-    
-    if selected_symbol:
-        try:
-            # Fetch detailed data
-            exchange_client = ExchangeClient(settings["exchange"])
-            ohlcv_data = exchange_client.fetch_ohlcv(
-                symbol=selected_symbol,
-                timeframe=settings["timeframe"],
-                limit=100
+            try:
+                # Fetch OHLCV data
+                ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
+                if len(ohlcv) > ema_slow:
+                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    
+                    # Calculate EMAs using pandas built-in
+                    df['ema_fast'] = calculate_ema(df['close'], ema_fast)
+                    df['ema_slow'] = calculate_ema(df['close'], ema_slow)
+                    
+                    latest = df.iloc[-1]
+                    prev = df.iloc[-2]
+                    
+                    # Determine signal
+                    signal = "Neutral"
+                    if latest['ema_fast'] > latest['ema_slow'] and prev['ema_fast'] <= prev['ema_slow']:
+                        signal = "🟢 BULLISH CROSS"
+                    elif latest['ema_fast'] < latest['ema_slow'] and prev['ema_fast'] >= prev['ema_slow']:
+                        signal = "🔴 BEARISH CROSS"
+                    elif latest['ema_fast'] > latest['ema_slow']:
+                        signal = "🟡 BULLISH Trend"
+                    elif latest['ema_fast'] < latest['ema_slow']:
+                        signal = "🟠 BEARISH Trend"
+                    
+                    results.append({
+                        'Symbol': symbol,
+                        'Price': latest['close'],
+                        f'EMA{ema_fast}': latest['ema_fast'],
+                        f'EMA{ema_slow}': latest['ema_slow'],
+                        'Signal': signal,
+                        'Trend': 'Bullish' if latest['ema_fast'] > latest['ema_slow'] else 'Bearish'
+                    })
+                
+            except Exception as e:
+                continue  # Skip symbols with errors
+            
+            progress_bar.progress((i + 1) / len(symbols))
+        
+        # Display results
+        if results:
+            df_results = pd.DataFrame(results)
+            
+            # Summary
+            bullish = len([r for r in results if 'BULLISH' in r['Signal']])
+            bearish = len([r for r in results if 'BEARISH' in r['Signal']])
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Scanned", len(symbols))
+            col2.metric("Signals Found", len(results))
+            col3.metric("Bullish/Bearish", f"{bullish}/{bearish}")
+            
+            # Filter options
+            st.subheader("📊 Results")
+            col1, col2 = st.columns(2)
+            with col1:
+                show_signals = st.multiselect(
+                    "Filter by Signal",
+                    options=df_results['Signal'].unique(),
+                    default=df_results['Signal'].unique()
+                )
+            with col2:
+                show_trend = st.multiselect(
+                    "Filter by Trend", 
+                    options=df_results['Trend'].unique(),
+                    default=df_results['Trend'].unique()
+                )
+            
+            filtered_df = df_results[
+                (df_results['Signal'].isin(show_signals)) & 
+                (df_results['Trend'].isin(show_trend))
+            ]
+            
+            st.dataframe(
+                filtered_df.style.format({
+                    'Price': '{:.6f}',
+                    f'EMA{ema_fast}': '{:.6f}',
+                    f'EMA{ema_slow}': '{:.6f}'
+                }),
+                use_container_width=True
             )
             
-            if ohlcv_data is not None:
-                # Calculate EMAs
-                tech_analysis = TechnicalAnalysis(
-                    fast_period=settings["ema_fast"],
-                    slow_period=settings["ema_slow"]
-                )
-                df = tech_analysis.calculate_emas(ohlcv_data)
+            # Chart for selected symbol
+            if not filtered_df.empty:
+                st.subheader("📈 Detailed Chart")
+                selected_symbol = st.selectbox("Select symbol:", filtered_df['Symbol'].tolist())
                 
-                # Create chart
-                fig = create_price_chart(df, selected_symbol, settings)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Show metrics
-                display_metrics(df, settings)
-                
-        except Exception as e:
-            st.error(f"Error fetching detailed data: {str(e)}")
-
-def create_price_chart(df, symbol, settings):
-    """Create interactive price chart with EMAs"""
-    fig = make_subplots(
-        rows=2, 
-        cols=1, 
-        shared_xaxes=True,
-        vertical_spacing=0.1,
-        subplot_titles=(
-            f'{symbol} Price Chart - {settings["timeframe"]}', 
-            'Volume'
-        ),
-        row_heights=[0.7, 0.3]
-    )
-    
-    # Candlestick chart
-    fig.add_trace(
-        go.Candlestick(
-            x=df.index,
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            name='Price'
-        ),
-        row=1, col=1
-    )
-    
-    # EMAs
-    fig.add_trace(
-        go.Scatter(
-            x=df.index, 
-            y=df['ema_fast'], 
-            line=dict(color='orange', width=1.5),
-            name=f'EMA{settings["ema_fast"]}'
-        ),
-        row=1, col=1
-    )
-    
-    fig.add_trace(
-        go.Scatter(
-            x=df.index, 
-            y=df['ema_slow'], 
-            line=dict(color='blue', width=1.5),
-            name=f'EMA{settings["ema_slow"]}'
-        ),
-        row=1, col=1
-    )
-    
-    # Volume
-    colors = ['red' if close < open else 'green' 
-              for close, open in zip(df['close'], df['open'])]
-    fig.add_trace(
-        go.Bar(
-            x=df.index, 
-            y=df['volume'],
-            marker_color=colors,
-            name='Volume'
-        ),
-        row=2, col=1
-    )
-    
-    fig.update_layout(
-        height=600,
-        title_text=f"Technical Analysis - {symbol}",
-        xaxis_rangeslider_visible=False,
-        showlegend=True
-    )
-    
-    return fig
-
-def display_metrics(df, settings):
-    """Display current metrics"""
-    latest = df.iloc[-1]
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    col1.metric(
-        "Current Price", 
-        f"{latest['close']:.6f}"
-    )
-    col2.metric(
-        f"EMA{settings['ema_fast']}", 
-        f"{latest['ema_fast']:.6f}"
-    )
-    col3.metric(
-        f"EMA{settings['ema_slow']}", 
-        f"{latest['ema_slow']:.6f}"
-    )
-    
-    trend_color = "🟢" if latest['ema_fast'] > latest['ema_slow'] else "🔴"
-    trend_text = "Bullish" if latest['ema_fast'] > latest['ema_slow'] else "Bearish"
-    col4.metric("Trend", f"{trend_color} {trend_text}")
-
-def render_instructions():
-    """Render usage instructions"""
-    with st.expander("ℹ️ How to use this screener"):
-        st.markdown("""
-        ### Usage Guide:
-        1. **Select Exchange**: Choose between Binance or Bybit
-        2. **Configure EMA**: Set your preferred fast and slow EMA periods
-        3. **Choose Timeframe**: Select the chart timeframe for analysis
-        4. **Adjust Performance**: Set maximum symbols to scan
-        5. **Click SCAN**: Analyze markets for EMA crossovers
-        
-        ### Signal Types:
-        - 🟢 **BULLISH CROSS**: Golden cross detected in current candle
-        - 🔴 **BEARISH CROSS**: Death cross detected in current candle  
-        - 🟡 **BULLISH (Recent)**: Recently had a golden cross
-        - 🟠 **BEARISH (Recent)**: Recently had a death cross
-        - **Neutral**: No recent crossover
-        
-        ### Tips:
-        - Start with fewer symbols for faster results
-        - Use 1h/4h timeframes for more reliable signals
-        - Combine with other indicators for confirmation
-        """)
+                if selected_symbol:
+                    try:
+                        ohlcv = exchange.fetch_ohlcv(selected_symbol, timeframe, limit=100)
+                        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                        df['ema_fast'] = calculate_ema(df['close'], ema_fast)
+                        df['ema_slow'] = calculate_ema(df['close'], ema_slow)
+                        
+                        # Create chart
+                        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                          vertical_spacing=0.1, row_heights=[0.7, 0.3])
+                        
+                        # Candlestick
+                        fig.add_trace(go.Candlestick(
+                            x=df['timestamp'], open=df['open'], high=df['high'],
+                            low=df['low'], close=df['close'], name='Price'
+                        ), row=1, col=1)
+                        
+                        # EMAs
+                        fig.add_trace(go.Scatter(
+                            x=df['timestamp'], y=df['ema_fast'], 
+                            line=dict(color='orange', width=1.5), name=f'EMA{ema_fast}'
+                        ), row=1, col=1)
+                        
+                        fig.add_trace(go.Scatter(
+                            x=df['timestamp'], y=df['ema_slow'], 
+                            line=dict(color='blue', width=1.5), name=f'EMA{ema_slow}'
+                        ), row=1, col=1)
+                        
+                        # Volume
+                        colors = ['red' if close < open else 'green' 
+                                for close, open in zip(df['close'], df['open'])]
+                        fig.add_trace(go.Bar(
+                            x=df['timestamp'], y=df['volume'], marker_color=colors, name='Volume'
+                        ), row=2, col=1)
+                        
+                        fig.update_layout(height=600, title_text=f"{selected_symbol} - {timeframe}",
+                                        xaxis_rangeslider_visible=False)
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                    except Exception as e:
+                        st.error(f"Error loading chart: {e}")
+            
+        else:
+            st.warning("❌ No trading signals found. Try increasing the symbol limit.")
+            
+    except Exception as e:
+        st.error(f"🚨 Error: {str(e)}")
+        st.info("This might be a temporary network issue. Please try again.")
 
 if __name__ == "__main__":
     main()
